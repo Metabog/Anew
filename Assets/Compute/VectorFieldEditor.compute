@@ -1,0 +1,41 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> vector_field;
+float2 edit_pos;
+float2 edit_vector;
+int editing_state;
+int frame;
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	if (frame == 0)
+	{
+		vector_field[id.xy] = float4(0.0f, 0.0f,0.0f,1.0f);
+	}
+	else
+	if (editing_state == 1)
+	{
+		int2 edit_coord = int2((int)(edit_pos.x * 128.0f), (int)(edit_pos.y * 128.0f));
+		float2 vec = (edit_vector);// (normalize(edit_vector) + float2(1.0f, 1.0f)) * 0.5f;
+
+		if (length(edit_coord - id.xy) < 4)
+		{
+			float amt = 1.0f;// 1.0f - (float)length(edit_coord - id.xy) / 4.0f;
+			vector_field[id.xy] = float4(vec.x, vec.y, 0.0f, 1.0f) * amt;
+		}
+	}
+	else
+	if (editing_state == 2)
+	{
+		int2 edit_coord = int2((int)(edit_pos.x * 128.0f), (int)(edit_pos.y * 128.0f));
+
+		if (length(edit_coord - id.xy) < 4)
+		{
+			vector_field[id.xy] = float4(0.0f,0.0f,0.0f,0.0f);
+		}
+	}
+}

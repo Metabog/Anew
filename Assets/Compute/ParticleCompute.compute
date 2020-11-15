@@ -1,0 +1,167 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+struct Particle
+{
+	float2 pos;
+	float2 velocity;
+	int active;
+	float time;
+	float life;
+};
+
+struct Ship
+{
+	float2 pos;
+	float2 aim_pos;
+	float mindist;
+
+	float enemy_mindist;
+	float2 enemy_aimpos;
+
+	float dealt_damage;
+};
+
+struct ExplosionStruct
+{
+	float2 pos;
+	int type;
+};
+
+struct Planet
+{
+	float2 pos;
+    float size;
+	float dealt_damage;
+};
+
+RWStructuredBuffer<Particle> dataBuffer;
+RWStructuredBuffer<Ship> shipBuffer;
+RWStructuredBuffer<ExplosionStruct> explosionBuffer;
+RWStructuredBuffer<Planet> planetBuffer;
+
+RWTexture2D<float4> particle_tex;	
+RWTexture2D<float4> quantized_unit_grid;
+RWTexture2D<float4> vector_field;
+
+float deltatime = 0.0f;
+
+int numShips = 0;
+int numExplosions = 0;
+int numPlanets = 0;
+Texture2D<float4> destroyer_sprite;
+
+float hash(float n)
+{
+	return frac(sin(n) * 43758.5453);
+}
+
+float noise(float3 x)
+{
+	// The noise function returns a value in the range -1.0f -> 1.0f
+
+	float3 p = floor(x);
+	float3 f = frac(x);
+
+	f = f * f * (3.0 - 2.0 * f);
+	float n = p.x + p.y * 57.0 + 113.0 * p.z;
+
+	return lerp(lerp(lerp(hash(n + 0.0), hash(n + 1.0), f.x),
+		lerp(hash(n + 57.0), hash(n + 58.0), f.x), f.y),
+		lerp(lerp(hash(n + 113.0), hash(n + 114.0), f.x),
+			lerp(hash(n + 170.0), hash(n + 171.0), f.x), f.y), f.z);
+}
+
+[numthreads(16,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	if (dataBuffer[id.x].active == 1)
+	{
+
+		int2 particle_pos = int2((int)(dataBuffer[id.x].pos.x * 4096.0f), (int)(dataBuffer[id.x].pos.y * 4096.0f));
+		for (int x = -8; x < 8; x++)
+		for (int y = -8; y < 8; y++)
+		{
+			float4 thiscol = destroyer_sprite[int2(x * 2 + 16, y * 2 + 16)];
+			if (length(thiscol > 0.0f))
+				particle_tex[int2(x + particle_pos.x, y + particle_pos.y)] = thiscol*2.0f;
+		}
+
+		//contribute to the quantized unit grid
+		int2 pos_in_quantized_grid = int2((int)(dataBuffer[id.x].pos.x * 64.0f), (int)(dataBuffer[id.x].pos.y * 64.0f));
+		quantized_unit_grid[pos_in_quantized_grid] += float4(0.1f, 0.1f, 0.1f, 0.1f);
+
+		for (int shipidx = 0; shipidx < numShips; shipidx++)
+		{
+			float len = length(shipBuffer[shipidx].pos - dataBuffer[id.x].pos);
+			if (len < 0.1f)
+			{	
+				if (quantized_unit_grid[pos_in_quantized_grid].x < shipBuffer[shipidx].mindist)
+				{
+					shipBuffer[shipidx].mindist = quantized_unit_grid[pos_in_quantized_grid].x;
+					shipBuffer[shipidx].aim_pos = dataBuffer[id.x].pos; //aim at this particle!
+				}
+			}
+
+			if (len < 0.08f)
+			{
+				if (len < shipBuffer[shipidx].enemy_mindist)
+				{
+					shipBuffer[shipidx].enemy_mindist = len;
+					shipBuffer[shipidx].enemy_aimpos = dataBuffer[id.x].pos; //aim at this particle!
+				}
+			}
+
+			if (len < 0.008f)
+			{
+				//DELETE - we're doing damage to the ship!
+				shipBuffer[shipidx].dealt_damage += 1.0f;
+				dataBuffer[id.x].active = false;
+			}
+		}
+
+		for (int planet_idx = 0; planet_idx < numPlanets; planet_idx++)
+		{
+			float len = length(planetBuffer[planet_idx].pos - dataBuffer[id.x].pos);
+
+			if (len < 0.032f)
+			{
+				//DELETE - we're doing damage to the ship!
+				planetBuffer[planet_idx].dealt_damage += 1.0f;
+				dataBuffer[id.x].active = false;
+			}
+		}
+
+		dataBuffer[id.x].time += 0.0005f;
+		if (dataBuffer[id.x].time > 2.0f)
+			dataBuffer[id.x].active = false; //timed out!
+
+		//update velocity via vector field. just simplex noise for now
+		//float2 vec = cos(float2(noise(float3(dataBuffer[id.x].pos.x*10.0f, dataBuffer[id.x].pos.y*10.0f, 0.0f)), noise(float3(dataBuffer[id.x].pos.y * 10.0f, dataBuffer[id.x].pos.x * 10.0f, 0.0f)))*3.134f*2.0f);
+		int2 read_vecfield = int2((int)(dataBuffer[id.x].pos.x * 128.0f), (int)(dataBuffer[id.x].pos.y * 128.0f));
+		float2 vec = vector_field[read_vecfield];
+		//vec *= 2.0f;
+		//vec -= float2(1.0f, 1.0f);
+
+		//dataBuffer[id.x].velocity += vec*0.1F;
+		if(length(vec)>0.001f)
+			dataBuffer[id.x].velocity = lerp(dataBuffer[id.x].velocity, vec, clamp(length(vec)*0.02f,0.015f,0.022f));
+		dataBuffer[id.x].velocity.x = clamp(dataBuffer[id.x].velocity.x, -1.0f, 1.0f);
+		dataBuffer[id.x].velocity.y = clamp(dataBuffer[id.x].velocity.y, -1.0f, 1.0f);
+
+		dataBuffer[id.x].velocity = normalize(dataBuffer[id.x].velocity);
+
+		for (int explosionidx = 0; explosionidx < numExplosions; explosionidx++)
+		{
+			float effect_Distance = explosionBuffer[explosionidx].type == 0 ? 0.01f : 0.005f;
+
+			if(length(explosionBuffer[explosionidx].pos - dataBuffer[id.x].pos)< effect_Distance)
+				dataBuffer[id.x].active = false;
+		}
+
+		dataBuffer[id.x].pos = dataBuffer[id.x].pos + dataBuffer[id.x].velocity*0.02f * deltatime;
+	}
+}
